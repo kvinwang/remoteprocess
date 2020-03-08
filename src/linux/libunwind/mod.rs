@@ -39,16 +39,20 @@ impl Unwinder {
     }
 
     pub fn cursor(&self, thread: &crate::Thread) -> Result<Cursor> {
+        self.cursor_with_tid(thread.id()?)
+    }
+
+    pub fn cursor_with_tid(&self, tid: pid_t) -> Result<Cursor> {
         unsafe
-        {
-            let upt = _UPT_create(thread.id()? as _);
-            let mut cursor = std::mem::uninitialized();
-            let ret = init_remote(&mut cursor, self.addr_space, upt);
-            if ret != 0 {
-                return Err(crate::Error::LibunwindError(Error::from(-ret)));
+            {
+                let upt = _UPT_create(tid);
+                let mut cursor = std::mem::uninitialized();
+                let ret = init_remote(&mut cursor, self.addr_space, upt);
+                if ret != 0 {
+                    return Err(crate::Error::LibunwindError(Error::from(-ret)));
+                }
+                Ok(Cursor{cursor, upt, initial_frame: true})
             }
-            Ok(Cursor{cursor, upt, initial_frame: true})
-        }
     }
 }
 
