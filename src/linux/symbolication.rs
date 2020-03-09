@@ -13,6 +13,7 @@ use goblin::elf::program_header::*;
 use crate::{StackFrame, Error, Process, Pid };
 
 use crate::ProcessMemory;
+use std::collections::HashMap;
 
 
 pub struct Symbolicator {
@@ -158,6 +159,26 @@ impl Symbolicator {
             _ => None
         }
     }
+
+    pub fn address_of(&self, name: &str) -> Option<u64> {
+        for (_key, binary) in self.binaries.iter() {
+            if binary.filename != "[vdso]" {
+                let mut symbols = binary.symbols.borrow_mut();
+                if symbols.is_none() {
+                    info!("loading symbols from {}", binary.filename);
+                    *symbols = Some(SymbolData::new(&binary.filename, binary.offset));
+                }
+            }
+        }
+        for (_key, binary) in self.binaries.iter() {
+            if let Some(Ok(symbols)) = &*binary.symbols.borrow() {
+                if let Some(addr) = symbols.address_of(name) {
+                    return Some(addr);
+                }
+            }
+        }
+        None
+    }
 }
 
 pub struct SymbolData {
@@ -166,12 +187,15 @@ pub struct SymbolData {
     offset: u64,
     symbols: Vec<(u64, u64, String)>,
     dynamic_symbols: Vec<(u64, u64, String)>,
+    name_to_addr: HashMap<String, u64>,
     filename: String
 }
 
 impl SymbolData {
     pub fn new(filename: &str, offset: u64) -> Result<SymbolData, Error> {
         info!("opening {} for symbols", filename);
+
+        let mut name_to_addr = HashMap::new();
 
         let file = File::open(filename)?;
         let map = unsafe { memmap::Mmap::map(&file)? };
@@ -191,6 +215,9 @@ impl SymbolData {
         for (_, sym) in file.symbols() {
             if let Some(name) = sym.name() {
                 symbols.push((sym.address(), sym.size(), name.to_string()));
+                if sym.size() > 0 {
+                    name_to_addr.insert(name.to_string(), offset+sym.address());
+                }
             }
         }
         symbols.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -199,10 +226,17 @@ impl SymbolData {
         for (_, sym) in file.dynamic_symbols() {
             if let Some(name) = sym.name() {
                 dynamic_symbols.push((sym.address(), sym.size(), name.to_string()));
+                if sym.size() > 0 {
+                    name_to_addr.insert(name.to_string(), offset+sym.address());
+                }
             }
         }
         dynamic_symbols.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        Ok(SymbolData{ctx, offset, dynamic_symbols, symbols, filename: filename.to_owned()})
+        Ok(SymbolData{ctx, offset, dynamic_symbols, symbols, name_to_addr, filename: filename.to_owned()})
+    }
+
+    pub fn address_of(&self, name: &str) -> Option<u64> {
+        Some(*self.name_to_addr.get(name)?)
     }
 
     pub fn symbolicate(&self, addr: u64, line_info: bool, callback: &mut dyn FnMut(&StackFrame)) -> Result<(), Error> {
